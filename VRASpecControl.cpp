@@ -1,7 +1,7 @@
 #include "VRASpecControl.h"
 
 VRASpecControl::VRASpecControl(UUID *p_uuid, EventQueue *p_eq, StateChain *p_stateChain, I2C *p_i2c):
-BLEService("specControl", p_uuid, (uint8_t)COUNT, p_eq, p_stateChain), 
+BLEService("specControl", p_uuid, p_eq, p_stateChain),
 eq(p_eq),
 // storage(p_storage),
 // settings(p_settings),
@@ -22,16 +22,12 @@ void VRASpecControl::init(){
 void VRASpecControl::initCharacteristics(){
     printf("[specCtrl] init Characteristics\r\n");
 
-        this->initCharacteristic(
-        SENSORDATA, 0xFF00,
+    this->addCharacteristic(new BLECharacteristic(0xFF00,
         GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_READ |
             GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_NOTIFY,
-        12);
-    this->toggleSpecSensorNotifyCb =
-        callback(this, &VRASpecControl::toggleSpecSensorNotify);
-    this->setNotifyRegisterCallback(SENSORDATA,
-                                    &this->toggleSpecSensorNotifyCb);
-    // this->initService();
+        12));
+    printf("[specCtrl] set notify cb\r\n");
+    this->setNotifyRegisterCallback(0xFF00, new Callback<void(bool)>(this, &VRASpecControl::toggleSpecSensorNotify));
 }
 
 void VRASpecControl::pastBleInit(){
@@ -39,6 +35,7 @@ void VRASpecControl::pastBleInit(){
 }
 
 void VRASpecControl::toggleSpecSensorNotify(bool enable){
+    printf("[specCtrl] toggle sensor notify\r\n");
     if(enable){
         this->getAdcEvent->start();
     }else{

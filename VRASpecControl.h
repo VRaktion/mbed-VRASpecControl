@@ -38,7 +38,6 @@ private:
     void getAdc();
 
     void toggleSpecSensorNotify(bool enable);
-    Callback<void(bool)> toggleSpecSensorNotifyCb;
 
     EventQueue *eq;
     // VRASettings *settings;
