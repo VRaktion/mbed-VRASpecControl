@@ -2,16 +2,13 @@
 #define VRA_SPEC_CONTROL_H
 
 #include "BLEService.h"
-#include "ble/BLE.h"
-#include "ble/Gap.h"
-#include "mbed.h"
-
-#include "ADS1x15.h"
 
 // #include "VRASettings.h"
 // #include "VRAStorage.h"
 #include "IntervalEvent.h"
 #include "BLENotifyCharacteristic.h"
+
+#include "ADS1x15.h"
 
 class VRASpecControl : public BLEService
 {
