@@ -1,7 +1,7 @@
 #include "VRASpecControl.h"
 
 VRASpecControl::VRASpecControl(UUID *p_uuid, EventQueue *p_eq, StateChain *p_stateChain, I2C *p_i2c):
-BLEService("specControl", p_uuid, p_eq, p_stateChain),
+BLEService("specCtrl", p_uuid, p_eq, p_stateChain),
 eq(p_eq),
 // storage(p_storage),
 // settings(p_settings),
@@ -23,8 +23,8 @@ void VRASpecControl::initCharacteristics(){
             12,//size
             this->eq,
             10000,//interval
-            5000,//min
-            20000,//max
+            1000,//min
+            600000,//max
             callback(this, &VRASpecControl::getAdc)
         )
     );
