@@ -8,39 +8,30 @@ eq(p_eq),
 i2c(p_i2c)
 {
     this->adc = new ADS1115(this->i2c, 0x49);
-
-        this->getAdcEvent = new IntervalEvent(
-        this->eq,
-        10000,
-        callback(this, &VRASpecControl::getAdc));
 }
 
 void VRASpecControl::init(){
     printf("[specCtrl] init\r\n");
+    this->conversationDelay = this->adc->calcConversationDelay(this->dataRate)/1000;
 }
 
 void VRASpecControl::initCharacteristics(){
     printf("[specCtrl] init Characteristics\r\n");
-
-    this->addCharacteristic(new BLECharacteristic(0xFF00,
-        GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_READ |
-            GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_NOTIFY,
-        12));
-    printf("[specCtrl] set notify cb\r\n");
-    this->setNotifyRegisterCallback(0xFF00, new Callback<void(bool)>(this, &VRASpecControl::toggleSpecSensorNotify));
+    this->addCharacteristic(
+        new BLENotifyCharacteristic(
+            (uint16_t) VRASpecControl::Characteristics::Spec,
+            12,//size
+            this->eq,
+            10000,//interval
+            5000,//min
+            20000,//max
+            callback(this, &VRASpecControl::getAdc)
+        )
+    );
 }
 
 void VRASpecControl::pastBleInit(){
     printf("[specCtrl] pastBleInit\r\n");
-}
-
-void VRASpecControl::toggleSpecSensorNotify(bool enable){
-    printf("[specCtrl] toggle sensor notify\r\n");
-    if(enable){
-        this->getAdcEvent->start();
-    }else{
-        this->getAdcEvent->stop();
-    }
 }
 
 void VRASpecControl::onStateOff(){
@@ -57,4 +48,34 @@ void VRASpecControl::onStateOn(){
 
 void VRASpecControl::getAdc(){
     printf("[specCtrl] get adc\r\n");
+    int delay = this->conversationDelay + 50;
+    this->eq->call(callback(this, &VRASpecControl::startSpecSensor), VRASpecControl::SpecSensors::CO);
+    this->eq->call_in(delay, callback(this, &VRASpecControl::startSpecSensor), VRASpecControl::SpecSensors::NO2);
+    this->eq->call_in(2 * delay, callback(this, &VRASpecControl::startSpecSensor), VRASpecControl::SpecSensors::O3);
+}
+
+void VRASpecControl::startSpecSensor(VRASpecControl::SpecSensors spec){
+    this->adc->startConversation((chan_t) spec, this->voltageRange, this->dataRate);
+    int delay = this->conversationDelay + 10;
+    this->eq->call_in(delay, callback(this, &VRASpecControl::readSpecSensor), spec);
+}
+
+void VRASpecControl::readSpecSensor(VRASpecControl::SpecSensors spec){
+    switch(spec){
+        case VRASpecControl::SpecSensors::CO://first
+            this->vCO = this->adc->getLastConversionResults_V(this->voltageRange);
+            printf("CO: %d\r\n", (int)(this->vCO*1E4));
+        break;
+        case VRASpecControl::SpecSensors::NO2://second
+            this->vNO2 = this->adc->getLastConversionResults_V(this->voltageRange);
+            printf("NO2: %d\r\n", (int)(this->vNO2*1E4));
+        break;
+        case VRASpecControl::SpecSensors::O3://last
+            this->vO3 = this->adc->getLastConversionResults_V(this->voltageRange);
+            this->setTrippleFloatVal((uint16_t) VRASpecControl::Characteristics::Spec, this->vCO, this->vNO2, this->vO3);
+            printf("O3: %d\r\n", (int)(this->vO3*1E4));
+        break;
+        default:
+        break;
+    }
 }
