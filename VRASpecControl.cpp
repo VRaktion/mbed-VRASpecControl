@@ -72,7 +72,12 @@ void VRASpecControl::readSpecSensor(VRASpecControl::SpecSensors spec){
         break;
         case VRASpecControl::SpecSensors::O3://last
             this->vO3 = this->adc->getLastConversionResults_V(this->voltageRange);
-            this->setTrippleFloatVal((uint16_t) VRASpecControl::Characteristics::Spec, this->vCO, this->vNO2, this->vO3);
+            float spec[3]{
+                this->vCO,
+                this->vNO2,
+                this->vO3
+            };
+            this->setGatt((uint16_t) VRASpecControl::Characteristics::Spec, spec, 3);
             printf("O3: %d\r\n", (int)(this->vO3*1E4));
         break;
         default:
