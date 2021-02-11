@@ -22,7 +22,7 @@ void VRASpecControl::initCharacteristics(){
             (uint16_t) VRASpecControl::Characteristics::Spec,
             12,//size
             this->eq,
-            10000,//interval
+            1000,//interval
             1000,//min
             600000,//max
             callback(this, &VRASpecControl::getAdc)
@@ -55,9 +55,37 @@ void VRASpecControl::getAdc(){
 }
 
 void VRASpecControl::startSpecSensor(VRASpecControl::SpecSensors spec){
-    this->adc->startConversation((chan_t) spec, this->voltageRange, this->dataRate);
-    int delay = this->conversationDelay + 10;
-    this->eq->call_in(delay, callback(this, &VRASpecControl::readSpecSensor), spec);
+    double val = 0;
+    for(int i = 0; i< this->averageSize; i++){
+        this->adc->startConversation((chan_t) spec, this->voltageRange, this->dataRate);
+        wait_us(this->adc->getConversationDelay()+2000);
+        val += (double) this->adc->getLastConversionResults_V(this->voltageRange);
+    } 
+    switch(spec){
+        case VRASpecControl::SpecSensors::CO://first
+            this->vCO = (float)(val / this->averageSize);
+            printf("CO: %d\r\n", (int)(this->vCO*1E4));
+        break;
+        case VRASpecControl::SpecSensors::NO2://second
+            this->vNO2 = (float)(val / this->averageSize);
+            printf("NO2: %d\r\n", (int)(this->vNO2*1E4));
+        break;
+        case VRASpecControl::SpecSensors::O3://last
+            this->vO3 = (float)(val / this->averageSize);
+            float spec[3]{
+                this->vCO,
+                this->vNO2,
+                this->vO3
+            };
+            this->setGatt((uint16_t) VRASpecControl::Characteristics::Spec, spec, 3);
+            printf("O3: %d\r\n", (int)(this->vO3*1E4));
+        break;
+        // default:
+        // break;
+    }
+
+            // int delay = this->conversationDelay + 2;
+        // this->eq->call_in(delay, callback(this, &VRASpecControl::readSpecSensor), spec);
 }
 
 void VRASpecControl::readSpecSensor(VRASpecControl::SpecSensors spec){
@@ -80,7 +108,7 @@ void VRASpecControl::readSpecSensor(VRASpecControl::SpecSensors spec){
             this->setGatt((uint16_t) VRASpecControl::Characteristics::Spec, spec, 3);
             printf("O3: %d\r\n", (int)(this->vO3*1E4));
         break;
-        default:
-        break;
+        // default:
+        // break;
     }
 }

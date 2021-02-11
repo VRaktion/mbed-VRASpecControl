@@ -50,12 +50,15 @@ private:
     ADS1115 *adc;
 
     const adsVR_t voltageRange = VR_p_m_4_096V;
-    const adsDR_t dataRate = ADS1115_DR_8SPS;
+    const adsDR_t dataRate = ADS1115_DR_860SPS;//ADS1115_DR_32SPS;//ADS1115_DR_8SPS;
     int conversationDelay{0};
 
     float vO3{.0};
     float vCO{.0};
     float vNO2{.0};
+
+    static const int averageSize{15};
+    int avgCnt{0};
 };
 
 #endif //
