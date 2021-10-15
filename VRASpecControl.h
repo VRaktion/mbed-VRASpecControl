@@ -17,6 +17,22 @@
 #include "ADS1x15.h"
 #include "mbed.h"
 
+#define CALIB_START_CO 0.001
+#define CALIB_END_CO -0.01//
+#define MANTISSE_CO 1E4//0//
+#define CALIB_START_NO2 0.1
+#define CALIB_END_NO2 0.001
+#define MANTISSE_NO2 1E2
+#define CALIB_START_O3 0.01
+#define CALIB_END_O3 0.0001
+#define MANTISSE_O3 1E3
+#define SPEC_INIT_TIME 720//0//
+#define AV_INIT_TIME SPEC_INIT_TIME + 300// ... min 500
+
+#define AV_SIZE 1500
+#define AV2_SIZE 100
+#define MAX_CONV_SIZE 500
+
 class VRASpecControl : public BLEService
 {
 public:
@@ -40,20 +56,25 @@ public:
     void adc0FallISR();
     void adc1FallISR();
 
+    void setBattery(uint8_t val);
+
 private:
     void onStateOff();
     void onStateStandby();
     void onStateOn();
 
-    void getAdc();
-    void getAdc2();
+    void getAdcCh1();
+    void getAdcCh2();
 
     void writeSpecToGatt();
 
     void adc0Ready();
     void adc1Ready();
 
-    void checkZeroVoltages(float vCO, float vNO2, float vO3);
+    void checkZeroVoltages(double vCO, double vNO2, double vO3);
+
+    void saveZeroVoltages();
+    void publishZeroVoltages();
 
     EventQueue *eq;
     IntervalEvent *interval;
@@ -70,7 +91,7 @@ private:
     adsVR_t vrO3{VR_p_m_4_096V};
     adsVR_t vrNO2{VR_p_m_4_096V};
     adsVR_t vrCO{VR_p_m_4_096V};
-    static const adsDR_t dataRate{ADS1115_DR_8SPS}; //averaging inchip ADS1115_DR_8SPS
+    static const adsDR_t dataRate{ADS1115_DR_128SPS}; //averaging inchip ADS1115_DR_8SPS
 
     int conversationDelay{0};
 
@@ -82,23 +103,23 @@ private:
     FloatingAverage *favCO;
     FloatingAverage *favNO2;
 
+    FloatingAverage *fav2O3;
+    FloatingAverage *fav2CO;
+    FloatingAverage *fav2NO2;
+
     SavLayFilter *sgO3;
     SavLayFilter *sgCO;
     SavLayFilter *sgNO2;
 
     bool voltageRangeUpdated = false;
 
-    const int maxConv{20};
+    const int maxConv{MAX_CONV_SIZE};//{300};//
     volatile int convCnt0{0};
     volatile int convCnt1{0};
 
-    double vO3sum{.0};
-    double vCOsum{.0};
-    double vNO2sum{.0};
-
-    float zeroCO{0.00004};
-    float zeroNO2{0.05};
-    float zeroO3{0.008};
+    double zeroCO{CALIB_START_CO};
+    double zeroNO2{CALIB_START_NO2};
+    double zeroO3{CALIB_START_O3};
 
     int testCnt{0};
 
@@ -107,6 +128,8 @@ private:
     VRAEnvironmentControl *envCtl;
     VRATvocControl *tvocCtl;
     VRAStorage *storage;
+
+    uint8_t battery{100};
 };
 
 #endif //

@@ -16,7 +16,7 @@ VRASpecControl::VRASpecControl(
                                envCtl(envCtl),
                                tvocCtl(tvocCtl)
 {
-    this->interval = new IntervalEvent(this->eq, 10000, callback(this, &VRASpecControl::getAdc));
+    this->interval = new IntervalEvent(this->eq, 15000, callback(this, &VRASpecControl::getAdcCh1));
     this->adc0 = new ADS1115(this->i2c, 0x49); //AIN0/AIN1: O3, AIN2/AIN3: NO2
     this->adc1 = new ADS1115(this->i2c, 0x48); //AIN0/AIN1: CO
 
@@ -28,9 +28,13 @@ VRASpecControl::VRASpecControl(
     this->adc1Int->fall(callback(this, &VRASpecControl::adc1FallISR));
     this->adc1Int->disable_irq();
 
-    this->favO3 = new FloatingAverage(6);
-    this->favCO = new FloatingAverage(6);
-    this->favNO2 = new FloatingAverage(6);
+    this->favCO = new FloatingAverage(AV_SIZE);
+    this->favNO2 = new FloatingAverage(AV_SIZE);
+    this->favO3 = new FloatingAverage(AV_SIZE);
+
+    this->fav2O3 = new FloatingAverage(AV2_SIZE);
+    this->fav2CO = new FloatingAverage(AV2_SIZE);
+    this->fav2NO2 = new FloatingAverage(AV2_SIZE);
 
     this->sgO3 = new SavLayFilter(&(this->vO3), 0, 25);   //9);
     this->sgCO = new SavLayFilter(&(this->vCO), 0, 25);   //9);
@@ -73,7 +77,7 @@ void VRASpecControl::initCharacteristics()
     //         10000,  //interval
     //         10000,  //min
     //         600000, //max
-    //         callback(this, &VRASpecControl::getAdc)));
+    //         callback(this, &VRASpecControl::getAdcCh1)));
 
     this->addCharacteristic(
         new BLECharacteristic(
@@ -106,44 +110,61 @@ void VRASpecControl::pastBleInit()
 
     float zeroVoltages[3];
     this->storage->get("zero", (void *)zeroVoltages, 12);
+    double zeroVoltagesShifted[3] = {
+        (double)zeroVoltages[0] / MANTISSE_CO,
+        (double)zeroVoltages[1] / MANTISSE_NO2,
+        (double)zeroVoltages[2] / MANTISSE_O3};
 
-    if (zeroVoltages[0] > 0 && zeroVoltages[0] < 0.00004)
+    if (zeroVoltagesShifted[0] !=0 && zeroVoltagesShifted[0] < CALIB_START_CO && zeroVoltagesShifted[0] > CALIB_END_CO)
     {
-        this->zeroCO = zeroVoltages[0];
+        this->zeroCO = zeroVoltagesShifted[0];
         printf("[specCtrl] using CO zero from storage %d\r\n", (int)(this->zeroCO * 1E6));
     }
     else
     {
-        zeroVoltages[0] = this->zeroCO;
+        zeroVoltages[0] = (float)(this->zeroCO * MANTISSE_CO);
+        printf("[specCtrl] using default CO zero \r\n");
     }
 
-    if (zeroVoltages[1] > 0.04 && zeroVoltages[1] < 0.05)
+    if (zeroVoltagesShifted[1] < CALIB_START_NO2 && zeroVoltagesShifted[1] > CALIB_END_NO2)
     {
-        this->zeroNO2 = zeroVoltages[1];
+        this->zeroNO2 = zeroVoltagesShifted[1];
         printf("[specCtrl] using NO2 zero from storage %d\r\n", (int)(this->zeroNO2 * 1E6));
     }
     else
     {
-        zeroVoltages[1] = this->zeroNO2;
+        zeroVoltages[1] = (float)(this->zeroNO2 * MANTISSE_NO2);
+        printf("[specCtrl] using default NO2 zero \r\n");
     }
 
-    if (zeroVoltages[2] > 0.007 && zeroVoltages[2] < 0.008)
+    if (zeroVoltagesShifted[2] < CALIB_START_O3 && zeroVoltagesShifted[2] > CALIB_END_O3)
     {
-        this->zeroO3 = zeroVoltages[2];
+        this->zeroO3 = zeroVoltagesShifted[2];
         printf("[specCtrl] using O3 zero from storage %d\r\n", (int)(this->zeroO3 * 1E6));
     }
     else
     {
-        zeroVoltages[2] = this->zeroO3;
+        zeroVoltages[2] = (float)(this->zeroO3 * MANTISSE_O3);
+        printf("[specCtrl] using default O3 zero \r\n");
     }
 
     this->favCO->flush(this->zeroCO);
     this->favNO2->flush(this->zeroNO2);
     this->favO3->flush(this->zeroO3);
 
+    this->fav2CO->flush(this->zeroCO);
+    this->fav2NO2->flush(this->zeroNO2);
+    this->fav2O3->flush(this->zeroO3);
+
+    printf("[specCtrl] zero Gatt %d %d %d\r\n", (int)(zeroVoltages[0]), (int)(zeroVoltages[1]), (int)(zeroVoltages[2]));
+    this->setGatt((uint16_t)VRASpecControl::Characteristics::ZeroVoltage, zeroVoltages, 3);
+
+    zeroVoltages[0] = zeroVoltagesShifted[0];
+    zeroVoltages[1] = zeroVoltagesShifted[1];
+    zeroVoltages[2] = zeroVoltagesShifted[2];
+
     this->setGatt((uint16_t)VRASpecControl::Characteristics::Spec, zeroVoltages, 3);
     this->setGatt((uint16_t)VRASpecControl::Characteristics::RawSpec, zeroVoltages, 3);
-    this->setGatt((uint16_t)VRASpecControl::Characteristics::ZeroVoltage, zeroVoltages, 3);
     this->setGatt((uint16_t)VRASpecControl::Characteristics::AvgSpec, zeroVoltages, 3);
 
     this->interval->start();
@@ -164,109 +185,95 @@ void VRASpecControl::onStateOn()
     printf("[specCtrl] on\r\n");
 }
 
-void VRASpecControl::getAdc()
+void VRASpecControl::getAdcCh1()
 {
     printf("[specCtrl] get adc\r\n");
 
-    //this->adc0->setVoltageRange(this->vrO3);//VR
     this->adc0->startConversation(chan_0_1);
     this->adc1->startConversation(chan_0_1);
 }
 
-void VRASpecControl::getAdc2()
+void VRASpecControl::getAdcCh2()
 {
-    // this->adc0->setVoltageRange(this->vrNO2);//VR
     this->adc0->startConversation(chan_2_3);
 }
 
 void VRASpecControl::adc0Ready()
 {
-    float val = this->adc0->getLastConversionResults_V();
+    if (this->tvocCtl->isMeassureBlocked()) //TVOC disturbs Signal!!
+    {
+        if (this->convCnt0 < this->maxConv)
+        {
+            this->eq->call_in(1000, callback(this, &VRASpecControl::getAdcCh1));
+        }
+        else
+        {
+            this->eq->call_in(1000, callback(this, &VRASpecControl::getAdcCh2));
+        }
 
-    // adsVR_t vr = this->adc0->setVoltageRangeByVal(val);//VR
+        return;
+    }
 
-    // printf(">> [%d] %d adc0 ready %d\r\n", this->convCnt0, (uint32_t)time(NULL), (int)(val * 1E5));
+    double val = this->adc0->getLastConversionResults_V();
+
     this->convCnt0++;
     if (this->convCnt0 <= this->maxConv)
     {
-
-        this->vO3sum += (double)val;
-        // printf("vr O3 %04X\r\n", vr);
-
-        // printf("O3 %d %d\r\n", this->testCnt, (int)(val * 1E5));
-        // this->testCnt++;
+        this->favO3->add((double)val);
 
         if (this->convCnt0 < this->maxConv)
         {
-            // this->vrO3 = vr;//VR
             this->adc0->startConversation(chan_0_1);
         }
         else //switch condition
         {
-            this->eq->call_in(1000, callback(this, &VRASpecControl::getAdc2)); //delay next channel
-            // this->adc0->setVoltageRange(this->vrNO2);
-            // this->adc0->startConversation(chan_2_3);
+            this->eq->call_in(1000, callback(this, &VRASpecControl::getAdcCh2)); //delay next channel
         }
     }
     else if (this->convCnt0 <= 2 * this->maxConv)
     {
-        this->vNO2sum += (double)val;
-        // printf("vr NO2 %04X\r\n", vr);
-        // printf("NO2 %d %d\r\n", this->testCnt, (int)(val * 1E5));
-        // this->testCnt++;
+        this->favNO2->add((double)val);
 
         if (this->convCnt0 < 2 * this->maxConv)
         {
             this->adc0->startConversation(chan_2_3);
-            // this->vrNO2 = vr;//VR
         }
         else //stop condition
         {
-            // printf("STOP COND\r\n");
-            // this->adc0->setVoltageRange(this->vrO3);//VR
-            this->testCnt = 0;
-
-            this->vO3 = this->vO3sum / (double)this->maxConv;
-            this->vO3sum = 0;
-
-            this->vNO2 = this->vNO2sum / (double)this->maxConv;
-            this->vNO2sum = 0;
-
             this->convCnt0 = 0;
 
             this->eq->call(callback(this, &VRASpecControl::writeSpecToGatt));
         }
     }
-    else
-    {
-    }
 }
 
 void VRASpecControl::adc1Ready()
 {
-    float val = this->adc1->getLastConversionResults_V();
-    // adsVR_t vr = this->adc1->setVoltageRangeByVal(val);//VR
+    if (this->tvocCtl->isMeassureBlocked())
+    {
+        return;
+    }
 
-    // printf(">> [%d] %d adc1 ready %d\r\n", this->convCnt1, (uint32_t)time(NULL), (int)(val * 1E5));
+    double val = this->adc1->getLastConversionResults_V();
+
     this->convCnt1++;
     if (this->convCnt1 < this->maxConv)
     {
-        // printf("vr CO %04X\r\n", vr);
-        this->vCOsum += (double)val;
+        this->favCO->add((double)val);
         this->adc1->startConversation(chan_0_1);
-        // this->vrCO = vr;//VR
     }
     else
     {
-        this->vCO = this->vCOsum / (double)this->maxConv;
-        this->vCOsum = 0;
-
         this->convCnt1 = 0;
     }
 }
 
 void VRASpecControl::writeSpecToGatt()
 {
+    this->vCO = this->favCO->get();
+    this->vNO2 = this->favNO2->get();
+    this->vO3 = this->favO3->get();
+
     printf("V CO %d\r\n", (int)(this->vCO * 1E6));
     printf("V NO2 %d\r\n", (int)(this->vNO2 * 1E6));
     printf("V O3 %d\r\n", (int)(this->vO3 * 1E6));
@@ -276,47 +283,48 @@ void VRASpecControl::writeSpecToGatt()
         (float)this->vNO2,
         (float)this->vO3};
 
-    this->setGatt((uint16_t)VRASpecControl::Characteristics::RawSpec, rawSpec, 3);
+    // this->setGatt((uint16_t)VRASpecControl::Characteristics::RawSpec, rawSpec, 3);
 
-    float smoothCO = (float)this->sgCO->Compute();
-    float smoothNO2 = (float)this->sgNO2->Compute();
-    float smoothO3 = (float)this->sgO3->Compute();
+    double smoothCO = this->sgCO->Compute();
+    double smoothNO2 = this->sgNO2->Compute();
+    double smoothO3 = this->sgO3->Compute();
 
     float spec[3]{
-        smoothCO,
-        smoothNO2,
-        smoothO3};
+        (float)smoothCO,
+        (float)smoothNO2,
+        (float)smoothO3};
 
     printf("sV CO %d\r\n", (int)(smoothCO * 1E6));
     printf("sV NO2 %d\r\n", (int)(smoothNO2 * 1E6));
     printf("sV O3 %d\r\n", (int)(smoothO3 * 1E6));
 
-    if ((uint32_t)time(NULL) > 600) // ggf um 120sec erhoehen
+    if ((uint32_t)time(NULL) > SPEC_INIT_TIME)
     {
-        this->favCO->add(smoothCO);
-        this->favNO2->add(smoothNO2);
-        this->favO3->add(smoothO3);
 
-        float avgCO = this->favCO->get();
-        float avgNO2 = this->favNO2->get();
-        float avgO3 = this->favO3->get();
+        this->fav2CO->add(smoothCO);
+        this->fav2NO2->add(smoothNO2);
+        this->fav2O3->add(smoothO3);
 
-        float avgSpec[3]{
-            avgCO,
-            avgNO2,
-            avgO3};
+        double avCO = this->fav2CO->get();
+        double avNO2 = this->fav2NO2->get();
+        double avO3 = this->fav2O3->get();
 
-        printf("aV CO %d\r\n", (int)(avgCO * 1E6));
-        printf("aV NO2 %d\r\n", (int)(avgNO2 * 1E6));
-        printf("aV O3 %d\r\n", (int)(avgO3 * 1E6));
+        printf("aV CO %d\r\n", (int)(avCO * 1E6));
+        printf("aV NO2 %d\r\n", (int)(avNO2 * 1E6));
+        printf("aV O3 %d\r\n", (int)(avO3 * 1E6));
+
+        float avSpec[3]{
+            (float)avCO,
+            (float)avNO2,
+            (float)avO3};
 
         this->setGatt((uint16_t)VRASpecControl::Characteristics::Spec, spec, 3);
-        this->setGatt((uint16_t)VRASpecControl::Characteristics::AvgSpec, avgSpec, 3);
-        this->eq->call(callback(this, &VRASpecControl::checkZeroVoltages), avgCO, avgNO2, avgO3);
+        this->setGatt((uint16_t)VRASpecControl::Characteristics::AvgSpec, avSpec, 3);
+        this->eq->call(callback(this, &VRASpecControl::checkZeroVoltages), avCO, avNO2, avO3);
     }
 }
 
-void VRASpecControl::checkZeroVoltages(float vCO, float vNO2, float vO3)
+void VRASpecControl::checkZeroVoltages(double vCO, double vNO2, double vO3)
 {
     uint32_t time_s = (uint32_t)time(NULL);
     float temperature = this->envCtl->getTemperature();
@@ -324,22 +332,22 @@ void VRASpecControl::checkZeroVoltages(float vCO, float vNO2, float vO3)
 
     printf("[specCtrl] zero voltage check. time %d temperature %d airQuali %d\r\n", time_s, (int)(temperature), (int)(airQuality));
 
-    if (time_s > 600 && temperature > 17.0 && temperature < 23.0 && airQuality < 3.0) //grundvoraussetzung
+    if (time_s > AV_INIT_TIME && temperature > 18.0 && airQuality < 3.0 && this->battery > 5) //grundvoraussetzung  && temperature < 23.0 entfällt da tendenziell größer
     {
         bool change = false;
-        if (vCO > 0 && vCO < this->zeroCO)
+        if (vCO < this->zeroCO && vCO > CALIB_END_CO)
         {
             change = true;
             this->zeroCO = vCO;
             printf("[specCtrl] new CO zero voltage: %d\r\n", (int)(this->zeroCO * 1E6));
         }
-        if (vNO2 > 0.04 && vNO2 < this->zeroNO2)
+        if (vNO2 < this->zeroNO2 && vNO2 > CALIB_END_NO2)
         {
             change = true;
             this->zeroNO2 = vNO2;
             printf("[specCtrl] new NO2 zero voltage: %d\r\n", (int)(this->zeroNO2 * 1E6));
         }
-        if (vO3 > 0.007 && vO3 < this->zeroO3)
+        if (vO3 < this->zeroO3 && vO3 > CALIB_END_O3)
         {
             change = true;
             this->zeroO3 = vO3;
@@ -348,13 +356,32 @@ void VRASpecControl::checkZeroVoltages(float vCO, float vNO2, float vO3)
 
         if (change)
         {
-            printf("[specCtrl] post new zero voltage\r\n");
-            float zeroVoltages[3]{
-                this->zeroCO,
-                this->zeroNO2,
-                this->zeroO3};
-            this->setGatt((uint16_t)VRASpecControl::Characteristics::ZeroVoltage, zeroVoltages, 3);
-            this->storage->set("zero", (void *)zeroVoltages, 12);
+            this->eq->call(callback(this, &VRASpecControl::publishZeroVoltages));
+            this->eq->call(callback(this, &VRASpecControl::saveZeroVoltages));
         }
     }
+}
+
+void VRASpecControl::saveZeroVoltages()
+{
+    printf("[specCtrl] save new zero voltage\r\n");
+    float zeroVoltages[3]{
+        (float)(this->zeroCO * MANTISSE_CO),
+        (float)(this->zeroNO2 * MANTISSE_NO2),
+        (float)(this->zeroO3 * MANTISSE_O3)};
+    this->storage->set("zero", (void *)zeroVoltages, 12);
+}
+
+void VRASpecControl::publishZeroVoltages()
+{
+    printf("[specCtrl] publish new zero voltage\r\n");
+    float zeroVoltages[3]{
+        (float)(this->zeroCO * MANTISSE_CO),
+        (float)(this->zeroNO2 * MANTISSE_NO2),
+        (float)(this->zeroO3 * MANTISSE_O3)};
+    this->setGatt((uint16_t)VRASpecControl::Characteristics::ZeroVoltage, zeroVoltages, 3); //TEST
+}
+
+void VRASpecControl::setBattery(uint8_t val){
+    this->battery = val;
 }
